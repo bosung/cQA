@@ -119,10 +119,8 @@ def hidden_avg_concat_attn(h_bar, h_tilda, n=-1):
 
 def get_qa_embed(encoder, decoder, sent, vocab, batch_size):
     h_bar, h_tilda = get_hiddens(encoder, decoder, sent, vocab, batch_size)
-    # h_dot = weighted_sum_h_tilda(h_bar, h_tilda, n)
-    new_h_bar = torch.cat((h_bar, h_tilda), dim=0)
     # h_bar.size() = (15, 300)
-    q_embed = torch.mean(new_h_bar, 0)
+    q_embed = torch.mean(h_bar, 0)
     a_embed = torch.mean(h_tilda, 0)
     return q_embed, a_embed
 
