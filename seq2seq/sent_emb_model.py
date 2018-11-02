@@ -113,14 +113,16 @@ def hidden_avg_concat_attn(h_bar, h_tilda, n=-1):
 
         associate_matrix = torch.matmul(h_bar, high_rel_answer.transpose(0, 1))
 
-    a_matrix = softmax(associate_matrix, dim=1)
-    return torch.matmul(a_matrix, h_tilda.transpose(0, 1))
+    a_matrix = softmax(associate_matrix)
+    return torch.matmul(a_matrix, h_tilda)
 
 
 def get_qa_embed(encoder, decoder, sent, vocab, batch_size):
     h_bar, h_tilda = get_hiddens(encoder, decoder, sent, vocab, batch_size)
+    h_dot = hidden_avg_concat_attn(h_bar, h_tilda)
+    new_h_bar = torch.cat((h_bar, h_dot), dim=1)
     # h_bar.size() = (15, 300)
-    q_embed = torch.mean(h_bar, 0)
+    q_embed = torch.mean(new_h_bar, 0)
     a_embed = torch.mean(h_tilda, 0)
     return q_embed, a_embed
 
