@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.autograd as autograd
 import torch.nn.functional as F
 
 from const import *
@@ -28,7 +27,6 @@ class Encoder(nn.Module):
 
     def init_hidden(self, batch_size):
         return torch.zeros(1, batch_size, self.hidden_size, device=device)
-        #return torch.zeros((batch_size, 1, self.hidden_size), device=device)
 
 
 class Decoder(nn.Module):

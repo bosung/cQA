@@ -149,13 +149,13 @@ def prepare_evaluate():
     test_data = {}
     test_answer = {}
 
-    lines = open('data/train_data_nv.txt', 'r').read().strip().split('\n')
+    lines = open('data/train_data_nv.txt', 'r', encoding='utf-8').read().strip().split('\n')
     for l in lines:
         q, a, num = l.split('\t')
         train_data[num] = q
         train_answer[num] = a
 
-    lines = open('data/test_data_nv.txt', 'r').read().strip().split('\n')
+    lines = open('data/test_data_nv.txt', 'r', encoding='utf-8').read().strip().split('\n')
     for l in lines:
         q, num, answer = l.split('\t')
         test_data[num] = q

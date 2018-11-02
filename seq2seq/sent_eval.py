@@ -1,3 +1,4 @@
+import torch
 import sent_emb_model as se
 import preprocess as prep
 from preprocess import Vocab
@@ -18,27 +19,32 @@ def eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=None,
     train_a_embed = {}
     print("[INFO] encoding train %d data ..." % len(train_data))
     for d in train_data.keys():
-        # TODO
-        h_bar, h_tilda = se.get_hiddens(encoder, decoder, train_data[d].q, vocab, batch_size)
-        # h_dot = weighted_sum_h_tilda(h_bar, h_tilda, n)
-        new_h_bar = torch.concat(h_bar, h_tilda, dim=0)
-        # train_a_embed[d] = get_hirel_n_ans_avg(h_bar, h_tilda, 3)
-        # h_bar.size() = (15, 300)
-        train_q_embed[d] = torch.mean(new_h_bar, 0)
-        train_a_embed[d] = torch.mean(h_tilda, 0)
+        train_q_embed[d], train_a_embed[d] = se.get_qa_embed(encoder, decoder, train_data[d], vocab, batch_size)
     print("[INFO] done")
 
+    test_q_embed = {}
+    test_a_embed = {}
+    print("[INFO] encoding test %d data ..." % len(test_data))
+    for d in test_data.keys():
+        test_q_embed[d], test_a_embed[d] = se.get_qa_embed(encoder, decoder, test_data[d], vocab, batch_size)
+    print("[INFO] done")
+
+    eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=1)
+    eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=0.95)
+    eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=0.9)
+    eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=0.85)
+    eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=0.8)
+    eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=0.75)
+
+
+def eval_accuracy(test_data, test_answer, test_a_embed, test_q_embed, train_a_embed, train_q_embed, alpha=1):
     print("[INFO] start evaluating!")
     print("==================>", alpha)
     total = len(test_data)
     answer5 = 0
     answer1 = 0
     for i, tk in enumerate(test_data.keys()):
-        h_bar_, h_tilda_ = se.get_hiddens(encoder, decoder, test_data[tk].q, vocab, batch_size)
-
-        # a_embed = get_hirel_n_ans_avg(h_bar_, h_tilda_, 3)
-        a_embed = torch.mean(h_tilda_, 0)
-        q_embed = torch.mean(h_bar_, 0)
+        q_embed, a_embed = test_q_embed[tk], test_a_embed[tk]
 
         # cacluate score
         temp_q = {}
@@ -54,7 +60,7 @@ def eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=None,
             ea = a_embed.view(-1)
             temp_a[candi] = cosine_similarity(ta, ea)
 
-            temp[candi] = alpha*temp_q[candi] + (1-alpha)*temp_a[candi]
+            temp[candi] = alpha * temp_q[candi] + (1 - alpha) * temp_a[candi]
             # temp[candi] = temp_q[candi]
 
         # sort by cos_sim
@@ -66,10 +72,8 @@ def eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=None,
         top1 = list(top_n.keys())[0]
         if isAnswer(top1, test_answer[tk]):
             answer1 += 1
-
-    accuracy_at_5 = answer5/total*100
-    accuracy_at_1 = answer1/total*100
-
+    accuracy_at_5 = answer5 / total * 100
+    accuracy_at_1 = answer1 / total * 100
     print("total: %d, accuracy@5: %.4f, accuracy@1: %.4f" % (total, accuracy_at_5, accuracy_at_1))
 
 
@@ -102,9 +106,4 @@ def evaluate(args):
     # evaluate_similarity(encoder, vocab, batch_size, decoder=decoder)
 
     pre_trained_embedding = vocab.load_weight(EMBED_PATH)
-    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder, alpha=1)
-    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder, alpha=0.95)
-    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder, alpha=0.9)
-    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder, alpha=0.85)
-    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder, alpha=0.8)
-    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder, alpha=0.7)
+    eval_sim_lc(encoder, vocab, batch_size, pre_trained_embedding, decoder=decoder)
