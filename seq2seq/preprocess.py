@@ -1,6 +1,6 @@
 from const import *
 import torch
-import torch.autograd as autograd
+
 
 class Vocab:
 
@@ -74,7 +74,7 @@ class Vocab:
 
 
 def read_train_data(path):
-    #path = 'data/cqa_train.txt'
+    # path = 'data/cqa_train.txt'
     lines = open(path, encoding='utf-8').read().strip().split('\n')
     pairs = [[l.split('\t')[0], l.split('\t')[1]] for l in lines]
     print("[INFO] read train data: %s ..." % pairs[0])

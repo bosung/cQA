@@ -5,6 +5,15 @@ import torch.nn.functional as F
 from const import *
 
 
+class Document:
+
+    def __init__(self, _id, title, answer, content=None):
+        self.id = _id
+        self.title = title
+        self.answer = answer
+        self.content = content
+
+
 class Encoder(nn.Module):
 
     def __init__(self, vocab_size, embed_size, hidden_size, batch_size, embedding_weight=None):
@@ -112,7 +121,7 @@ class AttentionDecoder(nn.Module):
         hidden = hidden.squeeze(0)
         output = torch.cat((context, hidden), 1)
         output = self.attention_combine(output)
-        out_ht = torch.tanh(output) # h_tilda
+        out_ht = torch.tanh(output)  # h_tilda
         # final_hidden = output
         output = F.log_softmax(self.out(out_ht), dim=1)
 

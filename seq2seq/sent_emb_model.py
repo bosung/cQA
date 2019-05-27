@@ -94,7 +94,7 @@ def hidden_avg_concat_attn(h_bar, h_tilda, n=-1):
     h_bar: RNN encoder t-step hidden
     h_tilda: RNN decoder t-step hidden
     h_dot: weighted sum of h_tilda wrt h_bar
-    same notation as Luong et al (2015)
+    same notations as Luong et al (2015)
 
     question representation: [h_bar:h_dot]
     answer representation: [h_tilda]
