@@ -101,7 +101,7 @@ class AttentionDecoder(nn.Module):
         # print(hidden.size()) # (1, 40, 128)
         # hidden = hidden.transpose(0, 1)
 
-        # step 2. socre(h_t, h_s)
+        # step 2. score(h_t, h_s)
         attn_prod = self.general_score(encoder_outputs, hidden)
         # attn_prod = self.dot_score(encoder_outputs, hidden)
 
