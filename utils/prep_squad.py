@@ -15,7 +15,6 @@ def tokenize_context(context):
     :param context: squad context (passage)
     :return: pair of (start, end) index and sentence
     """
-    # context_sents = sent_detector.tokenize(context)
     context_sents = sent_tokenize(context)
     start_idx = 0
     result = []
@@ -38,7 +37,7 @@ def has_answer(indices, sent, answers):
 
 def main():
 
-    with open("dev-v2.0.json", "r") as f:
+    with open("../data/QNLI/dev-v2.0.json", "r") as f:
         source = json.load(f)
 
     data = source["data"]
@@ -57,7 +56,8 @@ def main():
                 question = qa['question'].strip()
                 answers = qa['answers']
                 if qa['is_impossible'] is False:
-                    for i, (indices, sent) in enumerate(context_sents):
+                    for i, (indices, _sent) in enumerate(context_sents):
+                        sent = _sent.replace("\t", " ").replace("\n", " ")
                         __id = _id + "_" + str(i)
                         label = 'entailment' if has_answer(indices, sent, answers) else 'not_entailment'
                         parsed.append("{}\t{}\t{}\t{}\n".format(__id, question, sent, label))
@@ -66,7 +66,7 @@ def main():
     print("total: ", len(parsed))
     print("avg: ", len(parsed)/n_sent_sum)
 
-    with open("dev.tsv", "w", encoding='utf-8') as fw:
+    with open("../data/QNLI/dev.tsv", "w", encoding='utf-8') as fw:
         fw.write("\t".join(["index", "question", "sentence", "label"]) + "\n")
         for d in parsed:
             fw.write(d)
