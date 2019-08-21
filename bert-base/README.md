@@ -25,7 +25,7 @@ python run_classifier.py \
     --task_name=wikiqa \
     --data_dir=data/WikiQA/ \
     --bert_model=bert-base-cased \
-    --output_dir=wikikqa-dwsx2 \
+    --output_dir=wikiqa-dwsx2 \
     --do_eval
 #    --do_train \
 #    --num_train_epoch=10 \
