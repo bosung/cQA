@@ -33,7 +33,7 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from torch.nn import CrossEntropyLoss, MSELoss
+from torch.nn import CrossEntropyLoss, MSELoss, Sigmoid, KLDivLoss, Softmax
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score
 
@@ -45,6 +45,7 @@ from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 from wikiqa_eval import wikiqa_eval
 
 logger = logging.getLogger(__name__)
+nnSoftmax = Softmax(dim=1)
 
 
 class InputExample(object):
@@ -791,8 +792,8 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
+    # if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
+    #     raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
@@ -915,6 +916,14 @@ def main():
                 logger.info("***** [epoch %d] (sampling) get new dataloader ... *****" % ep)
                 train_dataloader = get_sampling_dataloader(args, features_by_label)
 
+            if args.do_histloss is True and ep > 1:
+                train_data, _ = get_tensor_dataset(train_features, output_mode)
+                if args.local_rank == -1:
+                    _train_sampler = RandomSampler(train_data)
+                else:
+                    _train_sampler = DistributedSampler(train_data)
+                train_dataloader = DataLoader(train_data, sampler=_train_sampler, batch_size=args.train_batch_size)
+
             logger.info("***** [epoch %d] trainig iteration starts ... *****" % ep)
             for step, batch in enumerate(train_dataloader):
                 batch = tuple(t.to(device) for t in batch)
@@ -928,10 +937,14 @@ def main():
                     loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
 
                     if args.do_histloss is True and ep > 1:
-                        loss_weight = loss_weight.clamp(0, 1)
+                        # loss_weight = loss_weight.clamp(0, 1)
                         pre_logit = torch.cat([logit0.unsqueeze(1), logit1.unsqueeze(1)], dim=1)
                         loss_pre = loss_fct(pre_logit.view(-1, num_labels), label_ids.view(-1))
-                        loss = loss_weight[0]*loss + (1-loss_weight[0])*loss_pre
+                        pre_dist = nnSoftmax(pre_logit)
+                        cur_dist = nnSoftmax(logits)
+                        loss_gap = KLDivLoss()(pre_dist.view(-1, num_labels), cur_dist.view(-1, num_labels))
+                        loss_weight = Sigmoid()(4 * (1 - loss_pre))  # 4 is magic number..
+                        loss = loss_weight.item()*loss + (1-loss_weight.item())*(loss_pre + 0.1 * loss_gap)  # 0.1 is magic number ...
 
                 elif output_mode == "regression":
                     loss_fct = MSELoss()
@@ -965,9 +978,9 @@ def main():
             # update weight in sampling experiments
             if args.do_sampling is True or args.do_histloss is True:
                 logger.info("***** [epoch %d] update logits ... *****" % ep)
-                features_by_label = update_logit(train_features, model, device)
+                train_features, features_by_label = update_logit(train_features, model, device)
             if args.do_histloss is True:
-                logger.info("***** [epoch %d] (HOF) loss weight %.4f %.4f *****" % (ep, loss_weight[0], 1-loss_weight[0]))
+                logger.info("***** [epoch %d] (HOF) loss weight %.4f %.4f *****" % (ep, loss_weight.item(), 1-loss_weight.item()))
             ##########################################################################
             # eval with dev set.
             dev_sampler = SequentialSampler(dev_data)
@@ -1068,7 +1081,7 @@ def main():
         eval_sampler = SequentialSampler(test_data)
         if task_name == 'wikiqa':
             eval_dataloader = DataLoader(test_data, sampler=eval_sampler, batch_size=1)
-            _ = wikiqa_eval(ep, device, test_examples, eval_dataloader, model, logger)
+            _ = wikiqa_eval(0, device, test_examples, eval_dataloader, model, logger)
         else:
             eval_dataloader = DataLoader(test_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
@@ -1221,7 +1234,7 @@ def update_logit(train_features, model, device):
             features_by_label[0].append(f)
         else:
             features_by_label[1].append(f)
-    return features_by_label
+    return train_features, features_by_label
 
 
 def softmax(x):
@@ -1253,7 +1266,7 @@ def get_tensor_dataset(features, output_mode):
     elif output_mode == "regression":
         all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
     all_logit0 = torch.tensor([f.logit0 for f in features], dtype=torch.float)
-    all_logit1 = torch.tensor([f.logit0 for f in features], dtype=torch.float)
+    all_logit1 = torch.tensor([f.logit1 for f in features], dtype=torch.float)
     train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_logit0, all_logit1)
     return train_data, all_label_ids
 
