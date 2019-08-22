@@ -34,9 +34,15 @@ python run_classifier.py \
 #    --minor_cls_size=1040 \
 #    --major_spl_size=5200 \
 #    --seed=10
-#    --do_sampling=True \
-#    --minor_cls_size=124769 \
-#    --major_spl_size=124769 \
-#    --do_histloss=True \
-##    --major_spl_size=249538 \
+```
+
+### run SemEval2017
+```
+python run_classifier.py \
+    --task_name=semeval \
+    --data_dir=../data/semeval/ \
+    --bert_model=bert-base-cased \
+    --output_dir=semeval-base \
+    --do_train \
+    --num_train_epoch=10 \
 ```

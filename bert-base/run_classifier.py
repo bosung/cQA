@@ -43,6 +43,7 @@ from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 
 from wikiqa_eval import wikiqa_eval
+from semeval_eval import semeval_eval
 
 logger = logging.getLogger(__name__)
 nnSoftmax = Softmax(dim=1)
@@ -324,7 +325,7 @@ class QnliProcessor(DataProcessor):
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), 
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")),
             "dev_matched")
 
     def get_test_examples(self, data_dir):
@@ -450,6 +451,44 @@ class WikiQAProcessor(DataProcessor):
             # sent_id = line[4]
             text_b = line[5]  # sentence
             label = line[6]  # label
+            examples.append(InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
+class SemevalProcessor(DataProcessor):
+    """Processor for the wiki QA data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["Bad", "Good"]  # is_duplicate
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, line[0])
+            text_a = line[1]  # question
+            text_b = line[2]  # sentence
+            label = line[3]  # label
+            if label == "PotentiallyUseful":
+                label = "Bad"
             examples.append(InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
 
@@ -619,11 +658,13 @@ def compute_metrics(task_name, preds, labels):
     elif task_name == "mnli-mm":
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "qnli":
-        return {"acc": simple_accuracy(preds, labels)}
+        return acc_and_f1(preds, labels)
     elif task_name == "rte":
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "wnli":
         return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "semeval":
+        return acc_and_f1(preds, labels)
     else:
         raise KeyError(task_name)
 
@@ -745,6 +786,7 @@ def main():
         "rte": RteProcessor,
         "wnli": WnliProcessor,
         "wikiqa": WikiQAProcessor,
+        "semeval": SemevalProcessor,
     }
 
     output_modes = {
@@ -758,6 +800,7 @@ def main():
         "rte": "classification",
         "wnli": "classification",
         "wikiqa": "classification",
+        "semeval": "classification",
     }
 
     if args.local_rank == -1 or args.no_cuda:
@@ -973,6 +1016,7 @@ def main():
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
+                break
             # end of epoch
             ##########################################################################
             # update weight in sampling experiments
@@ -987,6 +1031,10 @@ def main():
             if task_name == 'wikiqa':
                 dev_dataloader = DataLoader(dev_data, sampler=dev_sampler, batch_size=1)
                 score = wikiqa_eval(ep, device, dev_examples, dev_dataloader, model, logger)
+                score = str(round(score, 4))
+            elif task_name == 'semeval':
+                dev_dataloader = DataLoader(dev_data, sampler=dev_sampler, batch_size=1)
+                score = semeval_eval(ep, device, dev_examples, dev_dataloader, model, logger)
                 score = str(round(score, 4))
             else:
                 dev_dataloader = DataLoader(dev_data, sampler=dev_sampler, batch_size=args.eval_batch_size)
@@ -1038,7 +1086,10 @@ def main():
                 for key in sorted(result.keys()):
                     logger.info("  %s = %s", key, str(result[key]))
 
-                score = str(round(result['acc'], 4))
+                if task_name == "qnli":
+                    score = str(round(result['f1'], 4))
+                else:
+                    score = str(round(result['acc'], 4))
             model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
             output_model_file = os.path.join(args.output_dir, 'pytorch_model_%d_%s.bin' % (ep, score))
             torch.save(model_to_save.state_dict(), output_model_file)
@@ -1082,6 +1133,9 @@ def main():
         if task_name == 'wikiqa':
             eval_dataloader = DataLoader(test_data, sampler=eval_sampler, batch_size=1)
             _ = wikiqa_eval(0, device, test_examples, eval_dataloader, model, logger)
+        elif task_name == 'semeval':
+            eval_dataloader = DataLoader(test_data, sampler=eval_sampler, batch_size=1)
+            _ = semeval_eval(ep, device, dev_examples, dev_dataloader, model, logger)
         else:
             eval_dataloader = DataLoader(test_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
