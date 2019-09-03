@@ -46,3 +46,14 @@ python run_classifier.py \
     --do_train \
     --num_train_epoch=10 \
 ```
+
+### run on Quora dataset
+```angular2html
+python run_classifier.py \
+    --task_name=qqp \
+    --data_dir=../data/QQP/ \
+    --model_name=bert-base-cased \
+    --output_dir=qqp-base \
+    --do_train \
+    --num_train_epoch=10 \
+```

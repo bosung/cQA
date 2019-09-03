@@ -30,7 +30,7 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from torch.nn import CrossEntropyLoss, MSELoss, Sigmoid, KLDivLoss, Softmax, LogSoftmax
+from torch.nn import CrossEntropyLoss, MSELoss, Sigmoid, KLDivLoss, Softmax, LogSoftmax, BCEWithLogitsLoss
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score
 
@@ -39,7 +39,7 @@ from pytorch_pretrained_bert.modeling import BertForSequenceClassification, Bert
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 
-from data_processor import QnliProcessor, WikiQAProcessor, SemevalProcessor
+from data_processor import QnliProcessor, WikiQAProcessor, SemevalProcessor, QqpProcessor
 from wikiqa_eval import wikiqa_eval
 from semeval_eval import semeval_eval
 
@@ -51,14 +51,14 @@ nnLogSoftmax = LogSoftmax(dim=0)
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_id, weight=0.01, logit0=0.0, logit1=0.0):
+    def __init__(self, input_ids, input_mask, segment_ids, label_id, weight=0.01, preprob0=0.0, preprob1=0.0):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_id = label_id
         self.weight = weight
-        self.logit0 = logit0
-        self.logit1 = logit1
+        self.preprob0 = preprob0
+        self.preprob1 = preprob1
 
 
 def convert_examples_to_features(examples, label_list, max_seq_length,
@@ -225,7 +225,7 @@ def compute_metrics(task_name, preds, labels):
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mnli-mm":
         return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "qnli":
+    elif task_name == "squad":
         return acc_and_f1(preds, labels)
     elif task_name == "rte":
         return {"acc": simple_accuracy(preds, labels)}
@@ -346,6 +346,7 @@ def main():
     parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
     parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
     parser.add_argument('--do_sampling', type=bool, default=False)
+    parser.add_argument('--do_gsampling', type=bool, default=False)
     parser.add_argument('--do_histloss', type=bool, default=False)
     # parser.add_argument('--sampling_size', type=int, default=5000)
     parser.add_argument('--major_spl_size', type=int, default=0, help="sampling size for major class")
@@ -367,8 +368,8 @@ def main():
         # "mrpc": MrpcProcessor,
         # "sst-2": Sst2Processor,
         # "sts-b": StsbProcessor,
-        # "qqp": QqpProcessor,
-        "qnli": QnliProcessor,
+        "qqp": QqpProcessor,
+        "squad": QnliProcessor,
         # "rte": RteProcessor,
         # "wnli": WnliProcessor,
         "wikiqa": WikiQAProcessor,
@@ -382,7 +383,7 @@ def main():
         "sst-2": "classification",
         "sts-b": "regression",
         "qqp": "classification",
-        "qnli": "classification",
+        "squad": "classification",
         "rte": "classification",
         "wnli": "classification",
         "wikiqa": "classification",
@@ -461,7 +462,7 @@ def main():
         train_examples = processor.get_train_examples(args.data_dir)
 
         features_by_label = ""
-        if args.do_sampling is True:  # for num_train_optimization step
+        if args.do_sampling or args.do_gsampling is True:  # for num_train_optimization step
             train_steps_per_ep = math.ceil((args.major_spl_size + args.minor_cls_size) / args.train_batch_size)  # ceiling
             train_features, features_by_label = convert_examples_to_features(
                 train_examples, label_list, args.max_seq_length, tokenizer, output_mode, sep=True)
@@ -536,6 +537,7 @@ def main():
         logger.info("  Num steps = %d", num_train_optimization_steps)
 
         model.train()
+        pre_loss_sum, n_examples = 0, 0
         for ep in range(1, int(args.num_train_epochs)+1):
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
@@ -543,6 +545,12 @@ def main():
             if args.do_sampling is True:
                 logger.info("***** [epoch %d] (sampling) get new dataloader ... *****" % ep)
                 train_dataloader = get_sampling_dataloader(args, features_by_label)
+
+            if args.do_gsampling is True:
+                # pre_loss = pre_loss_sum / n_examples if n_examples > 0 else 0
+                pre_loss = pre_loss_sum
+                logger.info("***** [epoch %d] (gated-sampling) get new dataloader ... *****" % ep)
+                train_dataloader = get_gated_sampling_dataloader(ep, args, features_by_label, pre_loss=pre_loss)
 
             if args.do_histloss is True and ep > 1:
                 train_data, _ = get_tensor_dataset(train_features, output_mode)
@@ -553,20 +561,26 @@ def main():
                 train_dataloader = DataLoader(train_data, sampler=_train_sampler, batch_size=args.train_batch_size)
 
             logger.info("***** [epoch %d] trainig iteration starts ... *****" % ep)
+            pre_loss_sum = 0
+            n_examples = 0
             for step, batch in enumerate(train_dataloader):
                 batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids, logit0, logit1 = batch
+                input_ids, input_mask, segment_ids, label_ids, preprob0, preprob1 = batch
 
                 # define a new function to compute loss values for both output_modes
                 logits = model(input_ids, segment_ids, input_mask, labels=None)
 
                 if output_mode == "classification":
                     loss_fct = CrossEntropyLoss()
+                    # loss_fct = BCEWithLogitsLoss()
                     loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
+                    loss_no_red = CrossEntropyLoss(reduction='none')(logits.view(-1, num_labels), label_ids.view(-1))
+                    pre_loss_sum += loss_no_red.sum().item()
+                    n_examples += loss_no_red.size(0)
 
                     if args.do_histloss is True and ep > 1:
                         # loss_weight = loss_weight.clamp(0, 1)
-                        pre_logit = torch.cat([logit0.unsqueeze(1), logit1.unsqueeze(1)], dim=1)
+                        pre_logit = torch.cat([preprob0.unsqueeze(1), preprob1.unsqueeze(1)], dim=1)
                         loss_pre = loss_fct(pre_logit.view(-1, num_labels), label_ids.view(-1))
                         pre_dist = nnSoftmax(pre_logit)[:, 1]
                         cur_dist = nnLogSoftmax(logits)[:, 1]
@@ -604,9 +618,10 @@ def main():
             # end of epoch
             ##########################################################################
             # update weight in sampling experiments
-            if args.do_sampling is True or args.do_histloss is True:
-                logger.info("***** [epoch %d] update logits ... *****" % ep)
-                train_features, features_by_label = update_logit(train_features, model, device)
+            if args.do_sampling is True or args.do_histloss is True or args.do_gsampling is True:
+                logger.info(" (gated-sampling) num examples %d" % n_examples)
+                logger.info("***** [epoch %d] update pre probs ... *****" % ep)
+                train_features, features_by_label = update_probs(train_features, model, device)
             if args.do_histloss is True:
                 logger.info("***** [epoch %d] (HOF) loss weight %.4f %.4f *****" % (ep, loss_weight.item(), 1-loss_weight.item()))
             ##########################################################################
@@ -670,7 +685,7 @@ def main():
                 for key in sorted(result.keys()):
                     logger.info("  %s = %s", key, str(result[key]))
 
-                if task_name == "qnli":
+                if task_name == "squad":
                     score = str(round(result['f1'], 4))
                 else:
                     score = str(round(result['acc'], 4))
@@ -846,7 +861,7 @@ def main():
                     writer.write("%s = %s\n" % (key, str(result[key])))
 
 
-def update_logit(train_features, model, device):
+def update_probs(train_features, model, device):
     train_data, _ = get_tensor_dataset(train_features, "classification")
     loader = DataLoader(train_data, sampler=SequentialSampler(train_data), batch_size=1024)
     global_logit_idx = 0
@@ -857,14 +872,15 @@ def update_logit(train_features, model, device):
         with torch.no_grad():
             logits = model(input_ids, segment_ids, input_mask, labels=None)
 
+        probs = Softmax(dim=-1)(logits)
         batch_size = logits.size(0)
         for i in range(batch_size):
-            train_features[global_logit_idx+i].logit0 = logits[i][0].item()
-            train_features[global_logit_idx+i].logit1 = logits[i][1].item()
+            train_features[global_logit_idx+i].preprob0 = probs[i][0].item()
+            train_features[global_logit_idx+i].preprob1 = probs[i][1].item()
             if label_ids[i] == 0:
-                train_features[global_logit_idx+i].weight = logits[i][1].item()
+                train_features[global_logit_idx+i].weight = probs[i][1].item()
             else:  # label_ids[i] == 1
-                train_features[global_logit_idx+i].weight = logits[i][0].item()
+                train_features[global_logit_idx+i].weight = probs[i][0].item()
         global_logit_idx += batch_size
 
     assert global_logit_idx == len(train_data)
@@ -898,6 +914,53 @@ def get_sampling_dataloader(args, features_by_label):
     return train_dataloader
 
 
+def get_gated_sampling_dataloader(ep, args, features_by_label, pre_loss=0):
+    threshold = 0.5
+    if ep == 1:
+        label_0 = np.random.choice(features_by_label[0], args.minor_cls_size, replace=False)
+        logger.info(" gated-sampling result: th: %.2f, neg: %d, pos: %d" %
+                    (threshold, len(label_0), len(features_by_label[1])))
+        total = np.concatenate((label_0, features_by_label[1]))
+    else:
+        while True:
+            label_0_hard, label_0_easy = [], []
+            for x in features_by_label[0]:
+                if x.preprob0 <= threshold:
+                    label_0_hard.append(x)
+                else:
+                    label_0_easy.append(x)
+            # label_0 = [x for x in features_by_label[0] if x.preprob0 <= threshold]
+            # label_0_easy = [x for x in features_by_label[0] if x.preprob0 > threshold]
+            score = np.sum(-np.log(np.array([x.preprob0 for x in label_0_hard])))
+            if (score > pre_loss or abs(score - pre_loss) < pre_loss*0.5) and len(label_0_hard) > args.minor_cls_size:
+                break
+            else:
+                threshold += 0.02
+                if threshold >= 1:
+                    break
+
+        logger.info(" gated-sampling result: th: %.2f, neg: %d, pos: %d" %
+                    (threshold, len(label_0_hard), len(features_by_label[1])))
+        n_easy_sample = math.ceil(len(label_0_hard)*0.1)
+        if len(label_0_easy) > n_easy_sample:
+            label_0_easy = np.random.choice(label_0_easy, math.ceil(len(label_0_hard)*0.1))
+            logger.info(" add noisy (easy) samples 10 percents of %d = %d" %
+                        (len(label_0_hard), int(math.ceil(len(label_0_hard)*0.1))))
+            total = np.concatenate((label_0_hard, label_0_easy, features_by_label[1]))
+            logger.info(" total sampling size (%d + %d + %d ) = %d" %
+                        (len(label_0_hard), len(label_0_easy), len(features_by_label[1]), len(total)))
+        else:
+            logger.info(" No EASY samples!")
+            total = np.concatenate((label_0_hard, features_by_label[1]))
+            logger.info(" total sampling size (%d + %d) = %d" %
+                        (len(label_0_hard), len(features_by_label[1]), len(total)))
+
+    train_data, _ = get_tensor_dataset(total, "classification")
+    train_sampler = RandomSampler(train_data)
+    train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+    return train_dataloader
+
+
 def get_tensor_dataset(features, output_mode):
     all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
     all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
@@ -906,9 +969,9 @@ def get_tensor_dataset(features, output_mode):
         all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
     elif output_mode == "regression":
         all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
-    all_logit0 = torch.tensor([f.logit0 for f in features], dtype=torch.float)
-    all_logit1 = torch.tensor([f.logit1 for f in features], dtype=torch.float)
-    train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_logit0, all_logit1)
+    all_preprob0 = torch.tensor([f.preprob0 for f in features], dtype=torch.float)
+    all_preprob1 = torch.tensor([f.preprob1 for f in features], dtype=torch.float)
+    train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids, all_preprob0, all_preprob1)
     return train_data, all_label_ids
 
 
